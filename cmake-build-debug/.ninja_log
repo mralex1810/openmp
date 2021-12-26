@@ -1,0 +1,9 @@
+# ninja log v5
+780	907	1640522989095713112	openmp	aee7b45db7ddb697
+3	32	1640436618362014861	CMakeFiles/openmp.dir/Pixel.cpp.o	b70b91d199403592
+2	38	1640523034864808206	build.ninja	9d09946ccfbc78c9
+2	33	1640436618362014861	CMakeFiles/openmp.dir/RGBPixel.cpp.o	a576fe4c3c5d77d4
+0	779	1640522988968710008	CMakeFiles/openmp.dir/main.cpp.o	d1b8e48664fc1fb7
+1	37	1640436618368014829	CMakeFiles/openmp.dir/GrayPixel.cpp.o	2f1b4c7df98000de
+1	589	1640523731977639551	CMakeFiles/openmp.dir/main.cpp.o	d1b8e48664fc1fb7
+590	669	1640523732056640753	openmp	aee7b45db7ddb697
