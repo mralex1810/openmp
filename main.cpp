@@ -23,32 +23,21 @@ using GrayPixel = uint8_t;
 using RgbPixel = tuple<uint8_t, uint8_t, uint8_t>;
 
 template<typename T>
-uint8_t to_char(T value) {
+int8_t to_char(T value) {
     return value > 255 ? 255 : value < 0 ? 0 : value;
 }
 
 
-template<typename T>
-uint8_t get_min(const T it) {
-    return it;
+uint8_t get_min(size_t i) {
+    if (TYPE == Type::Gray)
+        return buffer[PIC_START + i];
+    return min(min((uint8_t) buffer[PIC_START + i], (uint8_t) buffer[PIC_START + 3 * i + 1]), (uint8_t) buffer[PIC_START + 3 * i + 2]);
 }
 
-template<>
-uint8_t get_min(const RgbPixel it) {
-//    auto &[a1, a2, a3] = it;
-    return min(min(get<0>(it), get<1>(it)), get<2>(it));
-}
-
-template<typename T>
-uint8_t get_max(const T it) {
-    return it;
-}
-
-template<>
-uint8_t get_max(const RgbPixel it) {
-    auto &[a1, a2, a3] = it;
-    return max(max(get<0>(it), get<1>(it)), get<2>(it));
-
+uint8_t get_max(size_t i) {
+    if (TYPE == Type::Gray)
+        return buffer[PIC_START + i];
+    return max(max((uint8_t) buffer[PIC_START + i], (uint8_t) buffer[PIC_START + 3 * i + 1]), (uint8_t) buffer[PIC_START + 3 * i + 2]);
 }
 
 template<typename T>
@@ -66,40 +55,21 @@ RgbPixel get_pixel(size_t i) {
                       (uint8_t) buffer[PIC_START + 3 * i + 2]);
 }
 
-template<typename T>
-void set_pixel(size_t i, T pixel);
+void stretch(size_t i, float delta, uint8_t min) {
+    if (TYPE == Type::Gray)
+        buffer[PIC_START + i] = to_char(((uint8_t)buffer[PIC_START + i] - min) * delta);
+    else {
+        buffer[PIC_START + 3 * i]     = to_char(    ((uint8_t)buffer[PIC_START + 3 * i] - min) * delta);
+        buffer[PIC_START + 3 * i + 1] = to_char(((uint8_t)buffer[PIC_START + 3 * i + 1] - min) * delta);
+        buffer[PIC_START + 3 * i + 2] = to_char(((uint8_t)buffer[PIC_START + 3 * i + 2] - min) * delta);
 
-template<>
-void set_pixel(size_t i, GrayPixel pixel) {
-    buffer[PIC_START + i] = pixel;
+    }
 }
 
-template<>
-void set_pixel(size_t i, RgbPixel pixel) {
-    tie(buffer[PIC_START + 3 * i], buffer[PIC_START + 3 * i + 1], buffer[PIC_START + 3 * i + 2]) = pixel;
-}
-
-template<typename T>
-T stretch(T pixel, int delta, uint8_t min);
-
-template<>
-GrayPixel stretch(GrayPixel pixel, int delta, uint8_t min) {
-    return to_char((pixel - min) * 255 / delta);
-}
-
-template<>
-RgbPixel stretch(RgbPixel pixel, int delta, uint8_t min) {
-    return make_tuple(to_char((get<0>(pixel) - min) * 255 / delta),
-                      to_char((get<1>(pixel) - min) * 255 / delta),
-                      to_char((get<2>(pixel) - min) * 255 / delta)
-    );
-}
 
 
 template<typename T>
 void do_all() {
-
-
     uint8_t min_diap = 255;
     uint8_t max_diap = 0;
 #pragma omp parallel
@@ -109,8 +79,8 @@ void do_all() {
 #pragma omp for nowait
         for (size_t i = 0; i < height; ++i) {
             for (size_t j = 0; j < width; j++) {
-                private_min = min(private_min, get_min<T>(get_pixel<T>(i * width + j)));
-                private_max = max(private_max, get_max<T>(get_pixel<T>(i * width + j)));
+                private_min = min(private_min, get_min(i * width + j));
+                private_max = max(private_max, get_max(i * width + j));
             }
         }
 #pragma omp critical
@@ -124,10 +94,10 @@ void do_all() {
         return;
     }
     float c = 255.0 / delta;
-#pragma omp parallel for
+#pragma omp parallel for nowait
     for (size_t i = 0; i < height; ++i) {
         for (size_t j = 0; j < width; j++) {
-            set_pixel(i * width + j, stretch(get_pixel<T>(i * width + j), delta, min_diap));
+            stretch(i * width + j, c, min_diap);
         }
     }
 }
