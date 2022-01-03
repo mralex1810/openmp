@@ -1,10 +1,10 @@
 #include <iostream>
 #include <omp.h>
-#include <cassert>
 #include <fstream>
 #include <vector>
-#include <cmath>
 #include <tuple>
+
+#define assert_message(expr, message) if (!(expr)) {cerr << message << endl; exit(0);}
 
 using namespace std;
 
@@ -13,7 +13,7 @@ enum class Type {
 };
 Type TYPE;
 int PIC_START;
-char *buffer;
+uint8_t *buffer;
 int threads;
 float miss_coef;
 int width;
@@ -21,289 +21,296 @@ int height;
 size_t square;
 int length;
 
-using GrayPixel = uint8_t;
-using RgbPixel = tuple<uint8_t, uint8_t, uint8_t>;
-
-template<typename T>
-int8_t to_char(T value) {
-    return value > 255 ? 255 : value < 0 ? 0 : value;
-}
-
-
-uint8_t get_min(size_t i) {
-    if (TYPE == Type::Gray)
-        return buffer[PIC_START + i];
-    return min(min((uint8_t) buffer[PIC_START + 3 * i], (uint8_t) buffer[PIC_START + 3 * i + 1]),
-               (uint8_t) buffer[PIC_START + 3 * i + 2]);
-}
-
-uint8_t get_max(size_t i) {
-    if (TYPE == Type::Gray)
-        return buffer[PIC_START + i];
-    return max(max((uint8_t) buffer[PIC_START + 3 * i], (uint8_t) buffer[PIC_START + 3 * i + 1]),
-               (uint8_t) buffer[PIC_START + 3 * i + 2]);
-}
-
-template<typename T>
-T get_pixel(size_t i);
-
-template<>
-GrayPixel get_pixel(size_t i) {
-    return buffer[PIC_START + i];
-}
-
-template<>
-RgbPixel get_pixel(size_t i) {
-    return make_tuple((uint8_t) buffer[PIC_START + 3 * i],
-                      (uint8_t) buffer[PIC_START + 3 * i + 1],
-                      (uint8_t) buffer[PIC_START + 3 * i + 2]);
-}
-
-void stretch(size_t i, float delta, uint8_t min) {
-    if (TYPE == Type::Gray)
-        buffer[PIC_START + i] = to_char(((uint8_t) buffer[PIC_START + i] - min) * delta);
-    else {
-        buffer[PIC_START + 3 * i] = to_char(((uint8_t) buffer[PIC_START + 3 * i] - min) * delta);
-        buffer[PIC_START + 3 * i + 1] = to_char(((uint8_t) buffer[PIC_START + 3 * i + 1] - min) * delta);
-        buffer[PIC_START + 3 * i + 2] = to_char(((uint8_t) buffer[PIC_START + 3 * i + 2] - min) * delta);
-
-    }
-}
-
-
-template<typename T>
-void do_all(clock_t time) {
-
-    size_t count_min[256];
-    size_t count_max[256];
-    for (int i = 0; i < 256; i++) {
-        count_min[i] = 0;
-        count_max[i] = 0;
-    }
-//    cout << ((double) clock() - time) * 1000.0 / CLOCKS_PER_SEC << endl;
-#pragma omp parallel num_threads(threads) default(none) shared(count_min, count_max, buffer) firstprivate(height, width)
-    {
-        size_t private_count_min[256];
-        size_t private_count_max[256];
-        for (int i = 0; i < 256; i++) {
-            private_count_min[i] = 0;
-            private_count_max[i] = 0;
-        }
-#pragma omp for
-        for (size_t i = 0; i < height; ++i) {
-            for (int j = 0; j < width; ++j) {
-                private_count_min[get_min(i * width + j)]++;
-                private_count_max[get_max(i * width + j)]++;
-            }
-        }
-#pragma omp critical
-        {
-            for (int i = 0; i < 256; i++) {
-                count_min[i] += private_count_min[i];
-                count_max[i] += private_count_max[i];
-            }
-        };
-    }
-    cout << ((double) clock() - time) * 1000.0 / CLOCKS_PER_SEC << endl;
-
-    size_t need_k = width * height * miss_coef;
-    uint8_t min = 0;
-    uint8_t max = 255;
-#pragma omp parallel sections num_threads(threads) lastprivate(min, max) firstprivate(need_k, count_max, count_min) default(none)
-    {
-#pragma omp section
-        {
-            size_t k = 0;
-            for (int i = 0; i < 256; i++) {
-                k += count_min[i];
-                if (k > need_k) {
-                    min = i;
-                    break;
-                }
-            }
-        }
-#pragma omp section
-        {
-            size_t k = 0;
-            for (int i = 255; i >= 0; i--) {
-                k += count_max[i];
-                if (k > need_k) {
-                    max = i;
-                    break;
-                }
-            }
-        }
-    }
-    const uint8_t min_diap = min;
-    const uint8_t max_diap = max;
-
-//    cout << need_k << ' ' << (int) min_diap << " " << (int) max_diap << endl;
-    const int delta = max_diap - min_diap;
-    if (delta == 0) {
-        return;
-    }
-//    cout << ((double) clock() - time) * 1000.0 / CLOCKS_PER_SEC << endl;
-
-    const float c = 255.0f / delta;
-#pragma omp parallel for num_threads(threads) firstprivate(width, c, min_diap, height) shared(buffer) default(none)
-    for (size_t i = 0; i < height; ++i) {
-        for (size_t j = 0; j < width; j++) {
-            stretch(width * i + j, c, min_diap);
-        }
-    }
-//    cout << ((double) clock() - time) * 1000.0 / CLOCKS_PER_SEC << endl;
+uint8_t to_char(float value) {
+    return value > 255.0f ? 255.0f : (value < 0.0f ? 0.0f : value);
 }
 
 int main(int argc, char *argv[]) {
-    assert(argc == 5);
+    assert_message(argc == 5, "Please, use arguments:  <input file> <output file> <coefficent>");
     threads = stoi(string(argv[1]));
-    assert(threads != 0);
-    omp_set_num_threads(threads);
-//#ifdef _OPENMP
-//#endif
-
+#ifdef _OPENMP
+    if (threads != 0)
+        omp_set_num_threads(threads);
+#endif
     miss_coef = stof(string(argv[4]));
-    ifstream in(argv[2], ifstream::binary);
-    in.seekg(0, in.end);
-    length = in.tellg();
-    in.seekg(0, in.beg);
-    buffer = new char[length];
-    in.read(buffer, length);
-    assert(buffer[0] == 'P');
+    try {
+        ifstream in;
+        in.exceptions(ifstream::failbit);
+        in.open(argv[2], ifstream::binary);
+        in.seekg(0, in.end);
+        length = in.tellg();
+        in.seekg(0, in.beg);
+        buffer = new uint8_t [length];
+        in.read((char*) buffer, length);
+        in.close();
+    } catch (const ifstream::failure& e) {
+        cerr << "Exception opening/reading file: " << e.what() <<  endl;
+    }
 
-    clock_t time;
+    assert_message(buffer[0] == 'P', "First symbol must be \"P\"");
+
+    double time;
+#ifdef _OPENMP
+    time = omp_get_wtime();
+#endif
+#ifndef _OPENMP
     time = clock();
-
+#endif
     int it = 3;
     string width_s;
     string height_s;
-
-    if (buffer[3] == '#') {
-        while (buffer[it] != '\n') {
-            it++;
-        }
-    }
-    while (buffer[it] > '9' || buffer[it] < '0') {
-        it++;
-    }
-
     while (buffer[it] != ' ') {
         width_s += buffer[it++];
     }
     while (buffer[it] != '\n') {
         height_s += buffer[it++];
     }
-//    cout << width_s << " " << height_s << endl;
     width = stoi(width_s);
     height = stoi(height_s);
     square = width * height;
+    assert_message(square != 0, "It's void picture");
     PIC_START = it + 5;
     if (buffer[1] == 53) {
         TYPE = Type::Gray;
-        do_all<GrayPixel>(time);
-    } else if (buffer[1] == 54) {
-        TYPE = Type::RGB;
-        size_t count_min[256];
-        size_t count_max[256];
-        size_t private_count_min[256];
-        size_t private_count_max[256];
+        size_t count[256];
+        size_t private_count[256];
         for (int i = 0; i < 256; i++) {
-            count_min[i] = 0;
-            count_max[i] = 0;
-            private_count_min[i] = 0;
-            private_count_max[i] = 0;
+            count[i] = 0;
+            private_count[i] = 0;
         }
-//    cout << ((double) clock() - time) * 1000.0 / CLOCKS_PER_SEC << endl;
-#pragma omp parallel num_threads(threads) default(none) shared(count_min, count_max, buffer) firstprivate(PIC_START, square, private_count_max, private_count_min)
+        long long i;
+#pragma omp parallel default(none) private(i) shared(count, buffer) firstprivate(PIC_START, square, private_count)
         {
-#pragma omp for nowait
-            for (int i = 0; i < square; i++) {
-                uint8_t a = buffer[PIC_START + 3 * i];
-                uint8_t b = buffer[PIC_START + 3 * i + 1];
-                uint8_t c = buffer[PIC_START + 3 * i + 2];
-                private_count_min[min(min(a, b), c)]++;
-                private_count_max[max(max(a, b), c)]++;
+#pragma omp for nowait schedule(static)
+            for (i = 0; i < square; i++) {
+                private_count[buffer[PIC_START + i]]++;
             }
 
 #pragma omp critical
-                for (int i = 0; i < 256; i++) {
-                    count_min[i] += private_count_min[i];
-                    count_max[i] += private_count_max[i];
-                }
+            for (int j = 0; j < 256; j++) {
+                count[j] += private_count[j];
+            }
         };
-        cout << ((double) clock() - time) * 1000.0 / CLOCKS_PER_SEC << endl;
 
-        size_t need_k = width * height * miss_coef;
+        size_t need_k = square * miss_coef + 1;
         uint8_t min;
         uint8_t max;
-#pragma omp parallel sections num_threads(threads) shared(min, max) firstprivate(need_k, count_max, count_min) default(none)
-        {
-#pragma omp section
+#pragma omp parallel sections shared(min, max) firstprivate(need_k, count) default(none)
             {
-                size_t k = 0;
-                for (int i = 0; i < 256; i++) {
-                    if (k <= need_k && k + count_min[i] > need_k) {
-                        break;
-                    } else {
-                        k += count_min[i];
-                        min = i;
+#pragma omp section
+                {
+                    size_t k = 0;
+                    for (int j = 0; j < 256; j++) {
+                        if (k <= need_k && k + count[j] > need_k) {
+                            break;
+                        } else {
+                            k += count[j];
+                            min = j;
 
+                        }
+                    }
+                }
+#pragma omp section
+                {
+                    size_t k = 0;
+                    for (int j = 255; j >= 0; j--) {
+                        if (k <= need_k && k + count[j] > need_k) {
+                            break;
+                        } else {
+                            k += count[j];
+                            max = j;
+                        }
                     }
                 }
             }
-#pragma omp section
-            {
-                size_t k = 0;
-                for (int i = 255; i >= 0; i--) {
-                    if (k <= need_k && k + count_max[i] > need_k) {
-                        break;
-                    } else {
-                        k += count_max[i];
-                        max = i;
-
-                    }
-                }
-            }
-        }
         const uint8_t min_diap = min;
         const uint8_t max_diap = max;
 
-//        cout << need_k << ' ' << (int) min_diap << " " << (int) max_diap << endl;
         const int delta = max_diap - min_diap;
         if (delta == 0) {
             goto label;
         }
-//    cout << ((double) clock() - time) * 1000.0 / CLOCKS_PER_SEC << endl;
 
         const float c = 255.0f / delta;
-#pragma omp parallel for num_threads(threads) firstprivate(width, c, min_diap, height, PIC_START, square) shared(buffer) default(none)
-        for (size_t i = 0; i < square; ++i) {
-            size_t p = PIC_START + 3 * i;
-                buffer[p] = to_char(((uint8_t) buffer[p] - min_diap) * c);
-                buffer[p + 1] = to_char(((uint8_t) buffer[p + 1] - min_diap) * c);
-                buffer[p + 2] = to_char(((uint8_t) buffer[p + 2] - min_diap) * c);
+#pragma omp parallel for firstprivate(width, c, min_diap, height, PIC_START, square) shared(buffer) private(i) default(none) schedule(static)
+        for (i = 0; i < square; ++i) {
+            size_t p = PIC_START + i;
+            buffer[p] = to_char((buffer[p] - min_diap) * c);
         }
-//    cout << ((double) clock() - time) * 1000.0 / CLOCKS_PER_SEC << endl;
+    } else if (buffer[1] == 54) {
+        TYPE = Type::RGB;
+        size_t count_r[256];
+        size_t count_g[256];
+        size_t count_b[256];
+        size_t private_count_r[256];
+        size_t private_count_g[256];
+        size_t private_count_b[256];
+        for (int i = 0; i < 256; i++) {
+            count_r[i] = 0;
+            count_g[i] = 0;
+            count_b[i] = 0;
+            private_count_r[i] = 0;
+            private_count_g[i] = 0;
+            private_count_b[i] = 0;
+        }
+        long long i;
+#pragma omp parallel default(none) shared(count_r, count_g, count_b, buffer) firstprivate(PIC_START, square, private_count_r, private_count_g, private_count_b) private(i)
+        {
+#pragma omp for nowait schedule(static)
+            for (i = 0; i < square; i++) {
+                size_t p = PIC_START + 3 * i;
+                private_count_r[buffer[p++]]++;
+                private_count_g[buffer[p++]]++;
+                private_count_b[buffer[p]]++;
+            }
+
+#pragma omp critical
+                for (int j = 0; j < 256; j++) {
+                    count_r[j] += private_count_r[j];
+                    count_g[j] += private_count_g[j];
+                    count_b[j] += private_count_b[j];
+                }
+        }
+        size_t need_k = square * miss_coef + 1;
+        uint8_t min_r, min_g, min_b, max_r, max_g, max_b;
+#pragma omp parallel sections shared(min_r, min_g, min_b, max_r, max_g,  max_b) firstprivate(need_k, count_r, count_g, count_b) default(none)
+        {
+            //red
+#pragma omp section
+            {
+                size_t k = 0;
+                for (int j = 0; j < 256; j++) {
+                    if (k <= need_k && k + count_r[j] > need_k) {
+                        break;
+                    } else {
+                        k += count_r[j];
+                        min_r = j;
+                    }
+                }
+            }
+#pragma omp section
+            {
+                size_t k = 0;
+                for (int j = 255; j >= 0; j--) {
+                    if (k <= need_k && k + count_r[j] > need_k) {
+                        break;
+                    } else {
+                        k += count_r[j];
+                        max_r = j;
+                    }
+                }
+            }
+            //green
+#pragma omp section
+            {
+                size_t k = 0;
+                for (int j = 0; j < 256; j++) {
+                    if (k <= need_k && k + count_g[j] > need_k) {
+                        break;
+                    } else {
+                        k += count_g[j];
+                        min_g = j;
+
+                    }
+                }
+            }
+#pragma omp section
+            {
+                size_t k = 0;
+                for (int j = 255; j >= 0; j--) {
+                    if (k <= need_k && k + count_g[j] > need_k) {
+                        break;
+                    } else {
+                        k += count_g[j];
+                        max_g = j;
+                    }
+                }
+            }
+            //blue
+#pragma omp section
+            {
+                size_t k = 0;
+                for (int j = 0; j < 256; j++) {
+                    if (k <= need_k && k + count_b[j] > need_k) {
+                        break;
+                    } else {
+                        k += count_b[j];
+                        min_b = j;
+
+                    }
+                }
+            }
+#pragma omp section
+            {
+                size_t k = 0;
+                for (int j = 255; j >= 0; j--) {
+                    if (k <= need_k && k + count_b[j] > need_k) {
+                        break;
+                    } else {
+                        k += count_b[j];
+                        max_b = j;
+                    }
+                }
+            }
+        }
+        const uint8_t min_diap = min(min_r, min(min_g, min_b));
+        const uint8_t max_diap = max(max_r, max(max_g, max_b));
+        const int delta = max_diap - min_diap;
+        if (delta == 0) {
+            goto label;
+        }
+
+        const float c = 255.0f / (float) delta;
+#pragma omp parallel for firstprivate(width, c, min_diap, height, PIC_START, square) shared(buffer) private(i) default(none) schedule(static)
+        for (i = 0; i < square; ++i) {
+            size_t p = PIC_START + 3 * i;
+            buffer[p] = to_char((buffer[p] - min_diap) * c);
+            buffer[p + 1] = to_char((buffer[p + 1] - min_diap) * c);
+            buffer[p + 2] = to_char((buffer[p + 2] - min_diap) * c);
+        }
     } else {
+        cerr << "It isn't \"P5\" or \"P6\"" << endl;
         exit(-1);
     }
     // TODO ignore coef
 
+
     label:
-    printf("Time (%i thread(s)): %g ms\n", threads, ((double) clock() - time) * 1000.0 / CLOCKS_PER_SEC);
-    exit(0);
-    ofstream out(argv[3]);
-    out << 'P' << (TYPE == Type::Gray ? '5' : '6') << '\n';
-    out << width_s << ' ' << height_s << '\n';
-    out << "255\n";
-    for (int i = 0; i < height * width; ++i) {
-        if (Type::Gray == TYPE) {
-            out << get_pixel<GrayPixel>(i);
-        } else {
-            RgbPixel pixel = get_pixel<RgbPixel>(i);
-            out << get<0>(pixel) << get<1>(pixel) << get<2>(pixel);
+#ifndef TEST
+    #ifdef _OPENMP
+        printf("Time (%i thread(s)): %g ms\n", threads, (omp_get_wtime() - time) * 1000);
+    #endif
+    #ifndef _OPENMP
+        printf("Time (%i thread(s)): %g ms\n", threads, (clock() - time) * 1000 / CLOCKS_PER_SEC);
+    #endif
+#endif
+#ifdef TEST
+    #ifdef _OPENMP
+        printf("%g", (omp_get_wtime() - time) * 1000);
+    #endif
+    #ifndef _OPENMP
+        printf("%g", (clock() - time) * 1000 / CLOCKS_PER_SEC);
+    #endif
+#endif
+#ifndef TEST
+        try {
+            ofstream out(argv[3], ofstream::binary);
+            out.exceptions(ofstream::failbit);
+            out << 'P' << (TYPE == Type::Gray ? '5' : '6') << '\n';
+            out << width_s << ' ' << height_s << '\n';
+            out << "255\n";
+            for (int i = 0; i < height * width; ++i) {
+                if (Type::Gray == TYPE) {
+                    out << buffer[PIC_START + i];
+                } else {
+                    out << buffer[PIC_START + 3 * i] << buffer[PIC_START + 3 * i + 1] << buffer[PIC_START + 3 * i + 2];
+                }
+            }
+            out.close();
+        } catch (const ofstream::failure& e) {
+            cerr << "Exception for output file: " << e.what() <<  endl;
         }
-    }
+#endif
 
 
     return 0;
